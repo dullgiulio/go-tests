@@ -1,0 +1,2 @@
+# sima
+Go Plugin Manager
