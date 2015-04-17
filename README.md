@@ -1,2 +1,3 @@
 # sima
-Go Plugin Manager
+
+Go Plugin Manager - Work in progress
