@@ -1,2 +1,1 @@
-examples/sima-hello-world/sima-hello-world
-cli/sima/sima
+bin/*

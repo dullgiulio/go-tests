@@ -2,7 +2,6 @@ package sima
 
 import (
 	"log"
-	"net/rpc"
 )
 
 type action int
@@ -21,15 +20,15 @@ type event struct {
 }
 
 type Manager struct {
-	events chan event
-	plugins map[string]*Plugin
+	events   chan event
+	plugins  map[string]*Plugin
 	callback func()
 }
 
 func NewManager(c func()) *Manager {
 	m := &Manager{
-		events: make(chan event),
-		plugins: make(map[string]*Plugin),
+		events:   make(chan event),
+		plugins:  make(map[string]*Plugin),
 		callback: c,
 	}
 	go m.run()
@@ -46,9 +45,9 @@ func (m *Manager) run() {
 			err = m.registerPlugin(e.plugin)
 		case actionPluginRun:
 			e.plugin.status = pluginStatusRunning
-			go e.plugin.run()
+			// TODO: Something here?
 		case actionPluginStop:
-			// TODO: Make rpc call to shut down.
+			e.plugin.Stop()
 			e.plugin.status = pluginStatusNone
 		case actionStop:
 			if m.callback != nil {
@@ -69,34 +68,33 @@ func (m *Manager) run() {
 }
 
 func (m *Manager) Stop() {
-	m.events <- event{ action: actionStop }
+	m.events <- event{action: actionStop}
 }
 
 func (m *Manager) Debug(p *Plugin) {
-	m.events <- event{ plugin: p}
+	m.events <- event{plugin: p}
 }
 
 func (m *Manager) RegisterPlugin(p *Plugin) {
-	m.events <- event{ plugin: p, action: actionPluginRegister}
+	m.events <- event{plugin: p, action: actionPluginRegister}
 }
 
 func (m *Manager) registerPlugin(p *Plugin) error {
 	m.plugins[p.name] = p
 
-	client, err := rpc.DialHTTP("tcp", "127.0.0.1:8888")
-	if err != nil {
+	if err := p.client.Start(); err != nil {
 		return err
 	}
 
 	var unused int
-	var methods Methods
+	var objs Objects
 
-	if err := client.Call("Plugin.SimaPluginRegister", unused, &methods); err != nil {
+	if err := p.client.Call("SimaRpc.List", unused, &objs); err != nil {
 		return err
 	}
 
-	p.methods = &methods
+	p.objs = &objs
+	debug.Printf("objects: %s", p.objs)
 
-	// TODO: Save discovered methods.
-	return nil
+	return p.client.Stop()
 }
