@@ -12,15 +12,16 @@ type Client interface {
 
 type ClientHTTP struct {
 	client *rpc.Client
-	host   string
+	proto  string
+	addr   string
 }
 
-func NewClientHTTP(host string) *ClientHTTP {
-	return &ClientHTTP{host: host}
+func NewClientHTTP(addr string) *ClientHTTP {
+	return &ClientHTTP{proto: "tcp", addr: addr}
 }
 
 func (c *ClientHTTP) Start() (err error) {
-	c.client, err = rpc.DialHTTP("tcp", c.host)
+	c.client, err = rpc.DialHTTP(c.proto, c.addr)
 	return
 }
 

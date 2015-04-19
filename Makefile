@@ -19,8 +19,8 @@ libsima:
 	go build $(PKG)
 
 clean:
-	rm -f $(BINDIR)/examples/*
-	rm -f $(BINDIR)/*
+	rm -rf $(BINDIR)/examples/*
+	rm -rf $(BINDIR)/*
 
 bindir:
 	mkdir -p $(BINDIR)

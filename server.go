@@ -45,7 +45,7 @@ func (r *rpcServer) register(obj interface{}) {
 
 func (r *rpcServer) run() error {
 	r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
-	l, e := net.Listen("tcp", r.conf.host)
+	l, e := net.Listen(r.conf.proto, r.conf.addr)
 	if e != nil {
 		return e
 	}
