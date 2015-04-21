@@ -1,33 +1,60 @@
 package sima
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"strings"
 )
 
-type HeaderWriter struct {
+type headerWriter struct {
 	w      io.Writer
 	prefix string
 }
 
-func NewHeaderWriter(w io.Writer) *HeaderWriter {
-	return &HeaderWriter{prefix: "sima", w: w}
+func newHeaderWriter(w io.Writer) *headerWriter {
+	return &headerWriter{prefix: "sima", w: w}
 }
 
-func (h *HeaderWriter) Put(key, val string) {
+func (h *headerWriter) put(key, val string) {
 	// TODO: Validate key format (no spaces etc)
 	fmt.Fprintf(h.w, "%s: %s: %s\n", h.prefix, key, val)
 }
 
-type HeaderReader struct {
-	r      io.Reader
+func (h *headerWriter) end() {
+	fmt.Fprintln(h.w, "")
+}
+
+type headerReader struct {
 	prefix string
+	values map[string]string
 }
 
-func NewHeaderReader(r io.Reader) *HeaderReader {
-	return &HeaderReader{prefix: "sima", r: r}
+func newHeaderReader() *headerReader {
+	return &headerReader{prefix: "sima", values: make(map[string]string)}
 }
 
-func (g *HeaderReader) Get(key string) string {
-	return ""
+func (g *headerReader) readAll(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			break
+		}
+
+		if line[0:len(g.prefix)] == g.prefix {
+			line = line[len(g.prefix)+2:]
+			end := strings.IndexByte(line, ':')
+			if end < 0 {
+				continue
+			}
+
+			g.values[line[0:end]] = line[end+2:]
+		}
+	}
+}
+
+func (g *headerReader) get(key string) string {
+	v, _ := g.values[key]
+	return v
 }

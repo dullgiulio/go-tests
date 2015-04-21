@@ -6,6 +6,7 @@ import (
 	"net/rpc"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -16,7 +17,7 @@ var SimaNil SimaNilT = SimaNilT{}
 type rpcServer struct {
 	mux    *sync.Mutex
 	server *rpc.Server
-	objs   *Objects
+	objs   []string
 	conf   *config
 }
 
@@ -24,7 +25,7 @@ func newRpcServer() *rpcServer {
 	r := &rpcServer{
 		mux:    &sync.Mutex{},
 		server: rpc.DefaultServer,
-		objs:   NewObjects(),
+		objs:   make([]string, 0),
 		conf:   makeConfig(), // conf remains fixed after this point
 	}
 	r.register(&SimaRpc{})
@@ -39,11 +40,18 @@ func (r *rpcServer) register(obj interface{}) {
 	defer r.mux.Unlock()
 
 	element := reflect.TypeOf(obj).Elem()
-	r.objs.Add(element.Name())
+	r.objs = append(r.objs, element.Name())
 	r.server.Register(obj)
 }
 
 func (r *rpcServer) run() error {
+	if r.conf.discover {
+		hw := newHeaderWriter(os.Stdout)
+		hw.put("objects", strings.Join(r.objs, ", "))
+		hw.end()
+		os.Exit(1)
+	}
+
 	r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
 	l, e := net.Listen(r.conf.proto, r.conf.addr)
 	if e != nil {
@@ -65,16 +73,6 @@ type SimaRpc struct{}
 
 func NewSimaRpc() *SimaRpc {
 	return &SimaRpc{}
-}
-
-func (s *SimaRpc) List(unused int, objs *Objects) error {
-	defaultServer.mux.Lock()
-	defer defaultServer.mux.Unlock()
-
-	for i := range defaultServer.objs.Names {
-		objs.Add(defaultServer.objs.Names[i])
-	}
-	return nil
 }
 
 func (s *SimaRpc) Exit(status int, unused *SimaNilT) error {

@@ -10,10 +10,9 @@ func main() {
 		done <- true
 	})
 
-	p := sima.NewPlugin("SimaHelloWorld", sima.NewClientHTTP("localhost:8888"))
-	m.RegisterPlugin(p)
-	m.Debug(p)
-	m.Stop()
+	// TODO: Request an object from a plugin.
+	p := sima.NewPlugin("bin/examples/sima-hello-world")
+	m.Register(p)
 
 	<-done
 }

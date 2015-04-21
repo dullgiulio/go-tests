@@ -1,7 +1,6 @@
 PKG=github.com/dullgiulio/sima
 BINDIR=bin
-BINS=simad \
-	 simactl
+BINS=simactl
 EXAMPLES=sima-hello-world
 PKGDEPS=
 
