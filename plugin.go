@@ -19,6 +19,7 @@ type plugin struct {
 	proto  string
 	addr   string
 	objs   []string
+	killCh <-chan time.Time
 	status pluginStatus
 	header *headerReader
 }
@@ -36,8 +37,13 @@ func (p *plugin) String() string {
 }
 
 func (p *plugin) start() error {
-	// TODO: Start and make killable via chan
-	return nil
+	cmd := exec.Command(p.exe, "-sima:start")
+	//stdout, err := cmd.StdoutPipe()
+	//if err != nil {
+	//    return err
+	//}
+	cmd.Start()
+	return p.wait(cmd)
 }
 
 func (p *plugin) stop() error {
@@ -49,6 +55,7 @@ func (p *plugin) stop() error {
 	}
 
 	resp := <-respCh
+	p.killCh = time.After(1 * time.Second)
 	return resp.err
 }
 
@@ -83,12 +90,11 @@ func (p *plugin) register() error {
 		p.objs = strings.Split(val, ", ")
 	}
 
-	// TODO: Must exit immediately, or kill it on timeout.
-
-	return p.wait(cmd, 1*time.Second)
+	p.killCh = time.After(1 * time.Second)
+	return p.wait(cmd)
 }
 
-func (p *plugin) wait(cmd *exec.Cmd, t time.Duration) error {
+func (p *plugin) wait(cmd *exec.Cmd) error {
 	errCh := make(chan error)
 	go func(cmd *exec.Cmd) {
 		errCh <- cmd.Wait()
@@ -99,7 +105,7 @@ func (p *plugin) wait(cmd *exec.Cmd, t time.Duration) error {
 		select {
 		case err := <-errCh:
 			return err
-		case <-time.After(t):
+		case <-p.killCh:
 			cmd.Process.Kill()
 			// TODO: What happens if this failed?
 		}

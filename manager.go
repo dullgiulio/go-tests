@@ -60,14 +60,15 @@ func (m *Manager) run() {
 			case actionPluginRegister:
 				debug.Printf("Register plugin %s", e.plugin.exe)
 				err = e.plugin.register()
-				// TODO: Support multiple implementators for the same object
 				for _, obj := range e.plugin.objs {
+					if p, ok := m.plugins[obj]; ok {
+						log.Print("Object ", obj, " already registered in ", p.String())
+					}
 					m.plugins[obj] = e.plugin
 				}
 			case actionPluginUnregister:
 				debug.Printf("Unregister plugin %s", e.plugin.exe)
-				// TODO: Stop plugin if running
-				// e.plugin.stop()
+				e.plugin.stop()
 
 				for _, obj := range e.plugin.objs {
 					delete(m.plugins, obj)
@@ -83,7 +84,6 @@ func (m *Manager) run() {
 			}
 
 			if err != nil {
-				// TODO: Move this to an errors channel
 				log.Print(err)
 				err = nil
 			}
