@@ -48,16 +48,23 @@ func (r *rpcServer) run() error {
 	if r.conf.discover {
 		hw := newHeaderWriter(os.Stdout)
 		hw.put("objects", strings.Join(r.objs, ", "))
-		hw.end()
 		os.Exit(1)
 	}
+
+	hw := newHeaderWriter(os.Stdout)
 
 	r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
 	l, e := net.Listen(r.conf.proto, r.conf.addr)
 	if e != nil {
+		hw.put("error", e.Error())
 		return e
 	}
-	http.Serve(l, nil)
+
+	hw.put("ready", "started http server")
+
+	if err := http.Serve(l, nil); err != nil {
+		hw.put("error", e.Error())
+	}
 	return nil
 }
 

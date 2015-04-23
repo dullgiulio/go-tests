@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"github.com/dullgiulio/sima"
+	"log"
 )
 
 func main() {
@@ -13,6 +15,14 @@ func main() {
 	// TODO: Request an object from a plugin.
 	p := sima.NewPlugin("bin/examples/sima-hello-world")
 	m.Register(p)
+
+	if resp, err := m.Call("Plugin.SayHello", "Giulio"); err != nil {
+		log.Print(err)
+	} else {
+		fmt.Printf("%s\n", resp)
+	}
+
+	m.Stop()
 
 	<-done
 }

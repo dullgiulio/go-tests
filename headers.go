@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 )
 
@@ -19,10 +20,6 @@ func newHeaderWriter(w io.Writer) *headerWriter {
 func (h *headerWriter) put(key, val string) {
 	// TODO: Validate key format (no spaces etc)
 	fmt.Fprintf(h.w, "%s: %s: %s\n", h.prefix, key, val)
-}
-
-func (h *headerWriter) end() {
-	fmt.Fprintln(h.w, "")
 }
 
 type headerReader struct {
@@ -41,6 +38,8 @@ func (g *headerReader) readAll(r io.Reader) {
 		if line == "" {
 			break
 		}
+
+		log.Print("read: ", line)
 
 		if line[0:len(g.prefix)] == g.prefix {
 			line = line[len(g.prefix)+2:]

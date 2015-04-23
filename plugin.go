@@ -1,7 +1,11 @@
 package sima
 
 import (
+	"bufio"
+	"io"
+	"log"
 	"net/rpc"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -29,6 +33,8 @@ func NewPlugin(exe string) *plugin {
 		exe:    exe,
 		header: newHeaderReader(),
 		objs:   make([]string, 0),
+		proto:  "unix",
+		addr:   "test",
 	}
 }
 
@@ -37,44 +43,74 @@ func (p *plugin) String() string {
 }
 
 func (p *plugin) start() error {
-	cmd := exec.Command(p.exe, "-sima:start")
-	//stdout, err := cmd.StdoutPipe()
-	//if err != nil {
-	//    return err
-	//}
-	cmd.Start()
-	return p.wait(cmd)
-}
-
-func (p *plugin) stop() error {
-	// TODO: Make sure it's actually dead
-	respCh := make(chan resp)
-	if err := p.call("SimaRpc.Exit", 1, SimaNil, respCh); err != nil {
-		close(respCh)
-		return err
-	}
-
-	resp := <-respCh
-	p.killCh = time.After(1 * time.Second)
-	return resp.err
-}
-
-func (p *plugin) call(name string, n int, data interface{}, respCh chan<- resp) error {
-	// TODO: Find which plugin contains the object, start it if necessary.
-	// The client object should come from the plugin
-	client, err := rpc.DialHTTP(p.proto, p.addr)
+	cmd := exec.Command(p.exe, "-sima:proto=unix", "-sima:addr=test")
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
 
+	ready := make(chan struct{})
+
+	go func(r io.Reader) {
+		scanner := bufio.NewScanner(r)
+
+		for scanner.Scan() {
+			log.Print("subprocess: ", scanner.Text())
+
+			if ready != nil {
+				ready <- struct{}{}
+				close(ready)
+				ready = nil
+			}
+		}
+	}(stdout)
+
+	cmd.Start()
+	p.killCh = nil
+
+	go p.wait(cmd)
+
+	<-ready
+
+	return nil
+}
+
+func (p *plugin) stop() error {
+	respCh := make(chan resp)
+	p.call("SimaRpc.Exit", 1, SimaNil, respCh)
+
+	p.killCh = time.After(1 * time.Second)
+
+	resp := <-respCh
+	close(respCh)
+
+	return resp.err
+}
+
+func (p *plugin) call(name string, args interface{}, response interface{}, respCh chan<- resp) {
+	// TODO: Find which plugin contains the object, start it if necessary.
+	// The client object should come from the plugin
+	client, err := rpc.DialHTTP(p.proto, p.addr)
+	if err != nil {
+		log.Print("dial failed: ", err)
+		respCh <- resp{err: err}
+		return
+	}
+
+	if p.proto == "unix" {
+		os.Remove(p.addr)
+	}
+
 	go func() {
-		err = client.Call(name, n, data)
+		var t string
+		err = client.Call(name, args, &t)
+		log.Print("response: ", t)
 		client.Close()
-		respCh <- resp{data: data, err: err}
+		respCh <- resp{data: t, err: err}
 		close(respCh)
 	}()
 
-	return nil
+	return
 }
 
 func (p *plugin) register() error {
@@ -90,6 +126,7 @@ func (p *plugin) register() error {
 		p.objs = strings.Split(val, ", ")
 	}
 
+	debug.Printf("Set kill after one second in register")
 	p.killCh = time.After(1 * time.Second)
 	return p.wait(cmd)
 }
@@ -98,6 +135,7 @@ func (p *plugin) wait(cmd *exec.Cmd) error {
 	errCh := make(chan error)
 	go func(cmd *exec.Cmd) {
 		errCh <- cmd.Wait()
+		debug.Printf("Subprocess exited")
 		close(errCh)
 	}(cmd)
 
@@ -107,7 +145,7 @@ func (p *plugin) wait(cmd *exec.Cmd) error {
 			return err
 		case <-p.killCh:
 			cmd.Process.Kill()
-			// TODO: What happens if this failed?
+			// TODO: Report error if this fails
 		}
 	}
 }

@@ -21,10 +21,9 @@ type resp struct {
 }
 
 type call struct {
-	obj, function string
-	respCh        chan resp
-	data          interface{}
-	n             int
+	obj, function  string
+	respCh         chan resp
+	args, response interface{}
 }
 
 type event struct {
@@ -58,7 +57,6 @@ func (m *Manager) run() {
 
 			switch e.action {
 			case actionPluginRegister:
-				debug.Printf("Register plugin %s", e.plugin.exe)
 				err = e.plugin.register()
 				for _, obj := range e.plugin.objs {
 					if p, ok := m.plugins[obj]; ok {
@@ -67,7 +65,6 @@ func (m *Manager) run() {
 					m.plugins[obj] = e.plugin
 				}
 			case actionPluginUnregister:
-				debug.Printf("Unregister plugin %s", e.plugin.exe)
 				e.plugin.stop()
 
 				for _, obj := range e.plugin.objs {
@@ -95,25 +92,27 @@ func (m *Manager) run() {
 			}
 
 			// If plugin is not started, start it.
-			p.start()
+			if err := p.start(); err != nil {
+				c.respCh <- resp{err: err}
+				continue
+			}
 			// Try making the call (in new routine)
-			p.call(c.obj+"."+c.function, c.n, c.data, c.respCh)
+			p.call(c.obj+"."+c.function, c.args, c.response, c.respCh)
 		}
 	}
 }
 
-func (m *Manager) Call(name string, n int, data interface{}) error {
+func (m *Manager) Call(name string, args interface{}) (interface{}, error) {
 	parts := strings.SplitN(name, ".", 2)
 	if parts[0] == "" || parts[1] == "" {
-		return errors.New("Invalid object name")
+		return nil, errors.New("Invalid object name")
 	}
 
 	respCh := make(chan resp)
-	m.calls <- call{obj: parts[0], function: parts[1], n: n, data: data, respCh: respCh}
-	resp := <-respCh
+	m.calls <- call{obj: parts[0], function: parts[1], args: args, respCh: respCh}
+	result := <-respCh
 
-	data = resp.data
-	return resp.err
+	return result.data, result.err
 }
 
 func (m *Manager) Stop() {
