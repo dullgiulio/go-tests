@@ -12,8 +12,6 @@ import (
 
 type SimaNilT struct{}
 
-var SimaNil SimaNilT = SimaNilT{}
-
 type rpcServer struct {
 	mux    *sync.Mutex
 	server *rpc.Server
@@ -45,25 +43,24 @@ func (r *rpcServer) register(obj interface{}) {
 }
 
 func (r *rpcServer) run() error {
+	h := header("sima")
+
 	if r.conf.discover {
-		hw := newHeaderWriter(os.Stdout)
-		hw.put("objects", strings.Join(r.objs, ", "))
+		h.output("objects", strings.Join(r.objs, ", "))
 		os.Exit(1)
 	}
-
-	hw := newHeaderWriter(os.Stdout)
 
 	r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
 	l, e := net.Listen(r.conf.proto, r.conf.addr)
 	if e != nil {
-		hw.put("error", e.Error())
+		h.output("error", e.Error())
 		return e
 	}
 
-	hw.put("ready", "started http server")
+	h.output("ready", "started http server")
 
 	if err := http.Serve(l, nil); err != nil {
-		hw.put("error", e.Error())
+		h.output("error", e.Error())
 	}
 	return nil
 }

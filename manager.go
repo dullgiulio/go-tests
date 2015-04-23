@@ -21,9 +21,9 @@ type resp struct {
 }
 
 type call struct {
-	obj, function  string
-	respCh         chan resp
-	args, response interface{}
+	obj, function string
+	respCh        chan resp
+	args          interface{}
 }
 
 type event struct {
@@ -58,12 +58,15 @@ func (m *Manager) run() {
 			switch e.action {
 			case actionPluginRegister:
 				err = e.plugin.register()
-				for _, obj := range e.plugin.objs {
-					if p, ok := m.plugins[obj]; ok {
-						log.Print("Object ", obj, " already registered in ", p.String())
-					}
-					m.plugins[obj] = e.plugin
-				}
+				/*
+					                for _, obj := range e.plugin.objs {
+										if p, ok := m.plugins[obj]; ok {
+											log.Print("Object ", obj, " already registered in ", p.String())
+										}
+										m.plugins[obj] = e.plugin
+									}
+				*/
+				m.plugins["Plugin"] = e.plugin
 			case actionPluginUnregister:
 				e.plugin.stop()
 
@@ -82,7 +85,6 @@ func (m *Manager) run() {
 
 			if err != nil {
 				log.Print(err)
-				err = nil
 			}
 		case c := <-m.calls:
 			p, ok := m.plugins[c.obj]
@@ -91,13 +93,7 @@ func (m *Manager) run() {
 				continue
 			}
 
-			// If plugin is not started, start it.
-			if err := p.start(); err != nil {
-				c.respCh <- resp{err: err}
-				continue
-			}
-			// Try making the call (in new routine)
-			p.call(c.obj+"."+c.function, c.args, c.response, c.respCh)
+			p.call(c)
 		}
 	}
 }
