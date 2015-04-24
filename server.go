@@ -47,7 +47,6 @@ func (r *rpcServer) run() error {
 
 	if r.conf.discover {
 		h.output("objects", strings.Join(r.objs, ", "))
-		os.Exit(1)
 	}
 
 	r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)

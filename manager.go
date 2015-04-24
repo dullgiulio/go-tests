@@ -6,44 +6,50 @@ import (
 	"strings"
 )
 
-type action int
-
-const (
-	actionPluginDebug action = iota
-	actionPluginRegister
-	actionPluginUnregister
-	actionStop
-)
-
-type resp struct {
-	data interface{}
-	err  error
-}
-
 type call struct {
 	obj, function string
-	respCh        chan resp
+	respCh        chan error
 	args          interface{}
+	resp          interface{}
 }
 
-type event struct {
+type waitRequest struct {
+	c chan struct{}
+}
+
+func newWaitRequest() *waitRequest {
+	return &waitRequest{c: make(chan struct{})}
+}
+
+func (wr *waitRequest) wait() {
+	<-wr.c
+}
+
+func (wr *waitRequest) done() {
+	close(wr.c)
+}
+
+type registration struct {
 	plugin *plugin
-	action action
+	objs   []string
+	done   chan struct{}
 }
 
 type Manager struct {
-	events   chan event
-	calls    chan call
-	plugins  map[string]*plugin
-	callback func()
+	cancel     chan *waitRequest
+	calls      chan *call
+	registerCh chan registration
+	plugins    map[*plugin]struct{}
+	objects    map[string]*plugin
 }
 
-func NewManager(c func()) *Manager {
+func NewManager() *Manager {
 	m := &Manager{
-		events:   make(chan event),
-		calls:    make(chan call),
-		plugins:  make(map[string]*plugin),
-		callback: c,
+		cancel:     make(chan *waitRequest),
+		calls:      make(chan *call),
+		registerCh: make(chan registration),
+		plugins:    make(map[*plugin]struct{}),
+		objects:    make(map[string]*plugin),
 	}
 	go m.run()
 	return m
@@ -52,42 +58,43 @@ func NewManager(c func()) *Manager {
 func (m *Manager) run() {
 	for {
 		select {
-		case e := <-m.events:
-			var err error
+		case c := <-m.cancel:
+			//limit := make(chan struct{}, 3)
 
-			switch e.action {
-			case actionPluginRegister:
-				err = e.plugin.register()
-				/*
-					                for _, obj := range e.plugin.objs {
-										if p, ok := m.plugins[obj]; ok {
-											log.Print("Object ", obj, " already registered in ", p.String())
-										}
-										m.plugins[obj] = e.plugin
-									}
-				*/
-				m.plugins["Plugin"] = e.plugin
-			case actionPluginUnregister:
-				e.plugin.stop()
+			// Shut down all plugins
+			for p := range m.plugins {
+				//limit <- struct{}{}
+				//
+				//go func(p *plugin) {
+				log.Print("shut down ", p)
+				p.stop()
 
-				for _, obj := range e.plugin.objs {
-					delete(m.plugins, obj)
+				//	<-limit
+				//}(p)
+			}
+			c.done()
+			return
+		case r := <-m.registerCh:
+			m.plugins[r.plugin] = struct{}{}
+
+			// Remove all objects of this plugin if present already
+			for obj, p := range m.objects {
+				if p == r.plugin {
+					delete(m.objects, obj)
 				}
-			case actionStop:
-				if m.callback != nil {
-					debug.Printf("callback and exit")
-					m.callback()
+			}
+			// Insert the exported objects. This way we support change of objects on upgrade.
+			for _, obj := range r.objs {
+				if p, ok := m.objects[obj]; ok {
+					log.Print("Object ", obj, " already registered in ", p.String())
+				} else {
+					m.objects[obj] = r.plugin
 				}
-				return
-			default:
-				debug.Printf("Plugin: %v", e.plugin)
 			}
 
-			if err != nil {
-				log.Print(err)
-			}
+			close(r.done)
 		case c := <-m.calls:
-			p, ok := m.plugins[c.obj]
+			p, ok := m.objects[c.obj]
 			if !ok {
 				log.Print("Object ", c.obj, " not found")
 				continue
@@ -98,27 +105,25 @@ func (m *Manager) run() {
 	}
 }
 
-func (m *Manager) Call(name string, args interface{}) (interface{}, error) {
+func (m *Manager) Call(name string, args interface{}, resp interface{}) error {
 	parts := strings.SplitN(name, ".", 2)
 	if parts[0] == "" || parts[1] == "" {
-		return nil, errors.New("Invalid object name")
+		return errors.New("Invalid object name")
 	}
 
-	respCh := make(chan resp)
-	m.calls <- call{obj: parts[0], function: parts[1], args: args, respCh: respCh}
-	result := <-respCh
-
-	return result.data, result.err
+	respCh := make(chan error)
+	m.calls <- &call{obj: parts[0], function: parts[1], args: args, resp: resp, respCh: respCh}
+	return <-respCh
 }
 
 func (m *Manager) Stop() {
-	m.events <- event{action: actionStop}
-}
-
-func (m *Manager) Debug(p *plugin) {
-	m.events <- event{plugin: p}
+	wr := newWaitRequest()
+	m.cancel <- wr
+	wr.wait()
 }
 
 func (m *Manager) Register(p *plugin) {
-	m.events <- event{plugin: p, action: actionPluginRegister}
+	done := make(chan struct{})
+	p.start(m.registerCh, done)
+	<-done
 }
