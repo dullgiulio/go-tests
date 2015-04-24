@@ -59,18 +59,17 @@ func (m *Manager) run() {
 	for {
 		select {
 		case c := <-m.cancel:
-			//limit := make(chan struct{}, 3)
+			finished := make(chan struct{}, len(m.plugins))
 
 			// Shut down all plugins
 			for p := range m.plugins {
-				//limit <- struct{}{}
-				//
-				//go func(p *plugin) {
-				log.Print("shut down ", p)
-				p.stop()
+				finished <- struct{}{}
 
-				//	<-limit
-				//}(p)
+				go p.stop()
+			}
+
+			for i := 0; i < len(m.plugins); i++ {
+				<-finished
 			}
 			c.done()
 			return
