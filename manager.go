@@ -29,16 +29,24 @@ func (wr *waitRequest) done() {
 	close(wr.c)
 }
 
+func (wr *waitRequest) reset() {
+	wr.c = make(chan struct{})
+}
+
 type registration struct {
+	waitRequest
 	plugin *plugin
 	objs   []string
-	done   chan struct{}
+}
+
+func newRegistration(p *plugin) *registration {
+	return &registration{waitRequest: waitRequest{c: make(chan struct{})}, plugin: p}
 }
 
 type Manager struct {
 	cancel     chan *waitRequest
 	calls      chan *call
-	registerCh chan registration
+	registerCh chan *registration
 	plugins    map[*plugin]struct{}
 	objects    map[string]*plugin
 }
@@ -47,7 +55,7 @@ func NewManager() *Manager {
 	m := &Manager{
 		cancel:     make(chan *waitRequest),
 		calls:      make(chan *call),
-		registerCh: make(chan registration),
+		registerCh: make(chan *registration),
 		plugins:    make(map[*plugin]struct{}),
 		objects:    make(map[string]*plugin),
 	}
@@ -91,7 +99,7 @@ func (m *Manager) run() {
 				}
 			}
 
-			close(r.done)
+			r.done()
 		case c := <-m.calls:
 			p, ok := m.objects[c.obj]
 			if !ok {
@@ -122,7 +130,10 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) Register(p *plugin) {
-	done := make(chan struct{})
-	p.start(m.registerCh, done)
-	<-done
+	r := newRegistration(p)
+	p.start(r)
+	r.wait()
+	r.reset()
+	m.registerCh <- r
+	r.wait()
 }

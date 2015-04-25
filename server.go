@@ -1,6 +1,7 @@
 package sima
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -13,7 +14,6 @@ import (
 type SimaNilT struct{}
 
 type rpcServer struct {
-	mux    *sync.Mutex
 	server *rpc.Server
 	objs   []string
 	conf   *config
@@ -21,55 +21,100 @@ type rpcServer struct {
 
 func newRpcServer() *rpcServer {
 	r := &rpcServer{
-		mux:    &sync.Mutex{},
 		server: rpc.DefaultServer,
 		objs:   make([]string, 0),
 		conf:   makeConfig(), // conf remains fixed after this point
 	}
 	r.register(&SimaRpc{})
-
 	return r
 }
 
 var defaultServer = newRpcServer()
 
 func (r *rpcServer) register(obj interface{}) {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-
 	element := reflect.TypeOf(obj).Elem()
 	r.objs = append(r.objs, element.Name())
 	r.server.Register(obj)
 }
 
+type connection interface {
+	addr() string
+	retries() int
+}
+
+type tcp int
+
+func (t *tcp) addr() string {
+	if *t < 1024 {
+		// Only use unprivileged ports
+		*t = 1023
+	}
+
+	*t = *t + 1
+	return fmt.Sprintf("%d", *t)
+}
+
+func (t *tcp) retries() int {
+	return 500
+}
+
+type unix struct{}
+
+func (u *unix) addr() string {
+	// TODO: Add a directory
+	return randstr(8)
+}
+
+func (u *unix) retries() int {
+	return 4
+}
+
 func (r *rpcServer) run() error {
-	h := header("sima")
+	var conn connection
+	var err error
+	var listener net.Listener
 
-	if r.conf.discover {
-		h.output("objects", strings.Join(r.objs, ", "))
+	h := header(r.conf.prefix)
+	h.output("objects", strings.Join(r.objs, ", "))
+
+	switch r.conf.proto {
+	case "tcp":
+		conn = new(tcp)
+	default:
+		r.conf.proto = "unix"
+		conn = new(unix)
 	}
 
-	r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
-	l, e := net.Listen(r.conf.proto, r.conf.addr)
-	if e != nil {
-		h.output("error", e.Error())
-		return e
+	for i := 0; i < conn.retries(); i++ {
+		r.conf.addr = conn.addr()
+		r.server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
+		listener, err = net.Listen(r.conf.proto, r.conf.addr)
+		if err == nil {
+			break
+		}
 	}
 
-	h.output("ready", "started http server")
+	if err != nil {
+		h.output("fatal",
+			fmt.Sprintf("err-connection-failed: Could not connect in %d attemps, using %s protocol", conn.retries(), r.conf.proto))
+		return err
+	}
 
-	if err := http.Serve(l, nil); err != nil {
-		h.output("error", e.Error())
+	h.output("ready", fmt.Sprintf("proto=%s addr=%s", r.conf.proto, r.conf.addr))
+	if err := http.Serve(listener, nil); err != nil {
+		h.output("fatal", fmt.Sprintf("err-http-serve: %s", err.Error()))
+		return err
 	}
 	return nil
 }
 
 func Register(obj interface{}) {
-	defaultServer.register(obj)
+    // TODO: panic() if run() has been called
+    defaultServer.register(obj)
 }
 
 func Run() error {
-	return defaultServer.run()
+    return defaultServer.run()
 }
 
 type SimaRpc struct{}

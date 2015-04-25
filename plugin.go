@@ -2,21 +2,13 @@ package sima
 
 import (
 	"bufio"
+	"errors"
 	"log"
 	"net/rpc"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
-	//"time"
-)
-
-type pluginStatus int
-
-const (
-	pluginStatusNone pluginStatus = iota
-	pluginStatusStarting
-	pluginStatusRunning
 )
 
 type plugin struct {
@@ -29,15 +21,12 @@ type plugin struct {
 	finishedCh chan error
 	inputCh    chan string
 	callsCh    chan *call
-	registerCh chan<- registration
-	regdoneCh  chan struct{}
-	overCh     chan struct{}
 	killCh     chan *waitRequest
-
-	ready    sync.RWMutex
-	fatalErr error
-
-	calls sync.WaitGroup
+	over       *waitRequest
+	reg        *registration
+	ready      sync.RWMutex
+	calls      sync.WaitGroup
+	header     header
 }
 
 func NewPlugin(exe string) *plugin {
@@ -45,12 +34,12 @@ func NewPlugin(exe string) *plugin {
 		exe:        exe,
 		objs:       make([]string, 0),
 		proto:      "unix",
-		addr:       "test",
 		inputCh:    make(chan string),
 		finishedCh: make(chan error),
 		callsCh:    make(chan *call),
 		killCh:     make(chan *waitRequest),
-		overCh:     make(chan struct{}),
+		over:       newWaitRequest(),
+		header:     header("sima" + randstr(5)),
 	}
 	// Keep this locked exclusively until the plugin is ready.
 	p.ready.Lock()
@@ -62,10 +51,9 @@ func (p *plugin) String() string {
 	return p.exe + " " + strings.Join(p.objs, ", ")
 }
 
-func (p *plugin) start(r chan<- registration, done chan struct{}) {
-	p.registerCh = r
-	p.regdoneCh = done
-	go p.wait(exec.Command(p.exe, "-sima:discover", "-sima:proto="+p.proto, "-sima:addr="+p.addr))
+func (p *plugin) start(reg *registration) {
+	p.reg = reg
+	go p.wait(exec.Command(p.exe, "-sima:prefix="+string(p.header), "-sima:proto="+p.proto))
 }
 
 func (p *plugin) call(c *call) {
@@ -99,7 +87,7 @@ func (p *plugin) stop() {
 	wr := newWaitRequest()
 	p.killCh <- wr
 	wr.wait()
-	<-p.overCh
+	p.over.wait()
 }
 
 func (p *plugin) wait(cmd *exec.Cmd) {
@@ -122,9 +110,31 @@ func (p *plugin) wait(cmd *exec.Cmd) {
 }
 
 func (p *plugin) doKill() {
+	if p.cmd == nil {
+		return
+	}
 	if err := p.cmd.Process.Kill(); err != nil {
 		log.Print("Cannot kill: ", err)
 	}
+}
+
+func (p *plugin) parseReady(str string) error {
+	errInvalid := errors.New("invalid ready message")
+	if !strings.HasPrefix(str, "proto=") {
+		return errInvalid
+	}
+	str = str[6:]
+	s := strings.IndexByte(str, ' ')
+	if s < 0 {
+		return errInvalid
+	}
+	p.proto = str[0:s]
+	str = str[s+1:]
+	if !strings.HasPrefix(str, "addr=") {
+		return errInvalid
+	}
+	p.addr = str[5:]
+	return nil
 }
 
 func (p *plugin) run() {
@@ -133,8 +143,6 @@ func (p *plugin) run() {
 	// This channel is an alias to p.callsCh. It allows to
 	// intermittedly process calls (only when we can handle them).
 	var callsCh chan *call
-
-	header := header("sima")
 
 	for {
 		select {
@@ -146,16 +154,28 @@ func (p *plugin) run() {
 			// If the plugin is not ready, the call will just hang waiting.
 			go p.doCall(c)
 		case line := <-p.inputCh:
-			if key, val := header.parse(line); key != "" {
+			if key, val := p.header.parse(line); key != "" {
 				switch key {
+				case "fatal":
+					log.Print("Fatal: ", val)
+					p.doKill()
 				case "error":
 					log.Print("Subprocess error: ", val)
 				case "objects":
 					p.objs = strings.Split(val, ", ")
 					// Send the objects that we have in this plugin
-					p.registerCh <- registration{plugin: p, objs: p.objs, done: p.regdoneCh}
+					p.reg.objs = p.objs
+					p.reg.done()
+					p.reg = nil // XXX: Cannot reuse?
 				case "ready":
 					var err error
+
+					if p.parseReady(val); err != nil {
+						log.Print("Cannot parse plugin connection data: ", err)
+						p.doKill()
+						// TODO: Unrecoverable?
+						continue
+					}
 
 					p.client, err = rpc.DialHTTP(p.proto, p.addr)
 					if err != nil {
@@ -215,7 +235,7 @@ func (p *plugin) run() {
 			// And must not be served but this loop
 			callsCh = nil
 
-			close(p.overCh)
+			p.over.done()
 
 			// TODO: If we were not killed restart plugin
 			return
