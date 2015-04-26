@@ -12,45 +12,15 @@ import (
 	"time"
 )
 
-const internalObject = "SimaRpc"
-
-type conn struct {
-	client *rpc.Client
-	err    error
-	wr     *waiter
-}
-
-type waiter struct {
-	c chan struct{}
-}
-
-func newWaiter() *waiter {
-	return &waiter{c: make(chan struct{})}
-}
-
-func (wr *waiter) wait() {
-	<-wr.c
-}
-
-func (wr *waiter) done() {
-	close(wr.c)
-}
-
-func (wr *waiter) reset() {
-	wr.c = make(chan struct{})
-}
-
-type objects struct {
-	list []string
-	err  error
-	wr   *waiter
-}
+var (
+	ErrInvalidMessage      = errors.New("Invalid ready message")
+	ErrRegistrationTimeout = errors.New("Registration timed out")
+)
 
 type Plugin struct {
 	exe         string
 	proto       string
 	params      []string
-	objs        []string
 	initTimeout time.Duration
 	exitTimeout time.Duration
 	header      header
@@ -69,7 +39,6 @@ func NewPlugin(exe string, params ...string) (*Plugin, error) {
 		initTimeout: 2 * time.Second,
 		exitTimeout: 1 * time.Second,
 		header:      header("sima" + randstr(5)),
-		objs:        make([]string, 0),
 		objsCh:      make(chan *objects),
 		connCh:      make(chan *conn),
 		killCh:      make(chan *waiter),
@@ -79,7 +48,7 @@ func NewPlugin(exe string, params ...string) (*Plugin, error) {
 }
 
 func (p *Plugin) String() string {
-	return p.exe + " " + strings.Join(p.objs, ", ")
+	return p.exe
 }
 
 func (p *Plugin) Start() {
@@ -120,8 +89,43 @@ func (p *Plugin) Objects() ([]string, error) {
 	return objects.list, objects.err
 }
 
-type pluginCtrl struct {
-	p *Plugin
+const internalObject = "SimaRpc"
+
+type conn struct {
+	client *rpc.Client
+	err    error
+	wr     *waiter
+}
+
+type waiter struct {
+	c chan struct{}
+}
+
+func newWaiter() *waiter {
+	return &waiter{c: make(chan struct{})}
+}
+
+func (wr *waiter) wait() {
+	<-wr.c
+}
+
+func (wr *waiter) done() {
+	close(wr.c)
+}
+
+func (wr *waiter) reset() {
+	wr.c = make(chan struct{})
+}
+
+type objects struct {
+	list []string
+	err  error
+	wr   *waiter
+}
+
+type ctrl struct {
+	p    *Plugin
+	objs []string
 	// Protocol and address for RPC
 	proto, addr string
 	// Unrecoverable error is used as response to calls after it happened.
@@ -145,8 +149,8 @@ type pluginCtrl struct {
 	client *rpc.Client
 }
 
-func newPluginCtrl(p *Plugin, cmd *exec.Cmd, t time.Duration) *pluginCtrl {
-	return &pluginCtrl{
+func newCtrl(p *Plugin, cmd *exec.Cmd, t time.Duration) *ctrl {
+	return &ctrl{
 		p:         p,
 		cmd:       cmd,
 		timeoutCh: time.After(t),
@@ -155,29 +159,54 @@ func newPluginCtrl(p *Plugin, cmd *exec.Cmd, t time.Duration) *pluginCtrl {
 	}
 }
 
-func (c *pluginCtrl) fatal(err error) {
+func (c *ctrl) fatal(err error) {
 	c.err = err
 	c.open()
 	c.kill()
 }
 
-func (c *pluginCtrl) isFatal() bool {
+func (c *ctrl) isFatal() bool {
 	return c.err != nil
 }
 
-func (c *pluginCtrl) close() {
+func (c *ctrl) close() {
 	c.connCh = nil
 	c.objsCh = nil
 }
 
-func (c *pluginCtrl) open() {
+func (c *ctrl) open() {
 	c.connCh = c.p.connCh
 	c.objsCh = c.p.objsCh
 }
 
-func (c *pluginCtrl) readOutput(r io.Reader) {
-	defer close(c.linesCh)
+func (c *ctrl) ready(val string) bool {
+	var err error
 
+	if err := c.parseReady(val); err != nil {
+		c.fatal(err)
+		return false
+	}
+
+	c.client, err = rpc.DialHTTP(c.proto, c.addr)
+	if err != nil {
+		c.fatal(err)
+		return false
+	}
+
+	// Remove the temp socket now that we are connected
+	if c.proto == "unix" {
+		if err := os.Remove(c.addr); err != nil {
+			log.Print("Cannot remove temporary socket: ", err)
+		}
+	}
+
+	// Defuse the timeout on ready
+	c.timeoutCh = nil
+
+	return true
+}
+
+func (c *ctrl) readOutput(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 
 	for scanner.Scan() {
@@ -185,12 +214,9 @@ func (c *pluginCtrl) readOutput(r io.Reader) {
 	}
 }
 
-func (c *pluginCtrl) wait(cmd *exec.Cmd) {
-	if cmd == nil {
-		// TODO: Shouldn't happen, but reply with error
-		return
-	}
+func (c *ctrl) wait(cmd *exec.Cmd) {
 	defer close(c.waitCh)
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		c.waitCh <- err
@@ -206,149 +232,140 @@ func (c *pluginCtrl) wait(cmd *exec.Cmd) {
 	c.waitCh <- cmd.Wait()
 }
 
-func (c *pluginCtrl) kill() {
+func (c *ctrl) kill() {
 	if c.cmd == nil {
 		return
 	}
 	if err := c.cmd.Process.Kill(); err != nil {
+		// TODO: Send to error handler
 		log.Print("Cannot kill: ", err)
 	}
 	c.cmd = nil
 }
 
-func (c *pluginCtrl) parseReady(str string) error {
-	errInvalid := errors.New("invalid ready message")
+func (c *ctrl) parseReady(str string) error {
 	if !strings.HasPrefix(str, "proto=") {
-		return errInvalid
+		return ErrInvalidMessage
 	}
 	str = str[6:]
 	s := strings.IndexByte(str, ' ')
 	if s < 0 {
-		return errInvalid
+		return ErrInvalidMessage
 	}
 	c.proto = str[0:s]
 	str = str[s+1:]
 	if !strings.HasPrefix(str, "addr=") {
-		return errInvalid
+		return ErrInvalidMessage
 	}
 	c.addr = str[5:]
 	return nil
 }
 
+// Copy the list of objects for the requestor
+func (c *ctrl) objects() []string {
+	list := make([]string, len(c.objs)-1)
+	for i, j := 0, 0; i < len(c.objs); i++ {
+		if c.objs[i] == internalObject {
+			continue
+		}
+		list[j] = c.objs[i]
+		j = j + 1
+	}
+	return list
+}
+
 func (p *Plugin) run(cmd *exec.Cmd) {
-	ctrl := newPluginCtrl(p, cmd, p.initTimeout)
-	go ctrl.wait(cmd)
+	c := newCtrl(p, cmd, p.initTimeout)
+	go c.wait(cmd)
 
 	for {
 		select {
-		case <-ctrl.timeoutCh:
-			ctrl.fatal(errors.New("Registration timed out"))
-		case c := <-ctrl.connCh:
-			if ctrl.isFatal() {
-				c.err = ctrl.err
-				c.wr.done()
+		case <-c.timeoutCh:
+			c.fatal(ErrRegistrationTimeout)
+		case r := <-c.connCh:
+			if c.isFatal() {
+				r.err = c.err
+				r.wr.done()
 				continue
 			}
 
-			c.client = ctrl.client
-			c.wr.done()
-		case o := <-ctrl.objsCh:
-			if ctrl.isFatal() {
-				o.err = ctrl.err
+			r.client = c.client
+			r.wr.done()
+		case o := <-c.objsCh:
+			if c.isFatal() {
+				o.err = c.err
 				o.wr.done()
 				continue
 			}
 
-			// Copy the list of objects for the requestor
-			o.list = make([]string, len(p.objs)-1)
-			for i, j := 0, 0; i < len(p.objs); i++ {
-				if p.objs[i] == internalObject {
-					continue
-				}
-				o.list[j] = p.objs[i]
-				j = j + 1
-			}
+			o.list = c.objects()
 			o.wr.done()
-		case line := <-ctrl.linesCh:
-			if key, val := p.header.parse(line); key != "" {
-				switch key {
-				case "fatal":
-					ctrl.fatal(errors.New(val))
-				case "error":
+		case line := <-c.linesCh:
+			key, val := p.header.parse(line)
+			if key == "" {
+				if val != "" {
 					// TODO: Send to error handler
 					log.Print("Subprocess error: ", val)
-				case "objects":
-					p.objs = strings.Split(val, ", ")
-					// We will start replyin to "Objects" requests only when
-					// the subprocess is ready
-				case "ready":
-					var err error
-
-					if err := ctrl.parseReady(val); err != nil {
-						ctrl.fatal(err)
-						continue
-					}
-
-					ctrl.client, err = rpc.DialHTTP(ctrl.proto, ctrl.addr)
-					if err != nil {
-						ctrl.fatal(err)
-						continue
-					}
-
-					// Remove the temp socket now that we are connected
-					if ctrl.proto == "unix" {
-						if err := os.Remove(ctrl.addr); err != nil {
-							log.Print("Cannot remove temporary socket: ", err)
-						}
-					}
-
-					// Defuse the timeout on ready
-					ctrl.timeoutCh = nil
-
-					// Start accepting calls
-					ctrl.open()
 				}
+				continue
+			}
+
+			switch key {
+			case "fatal":
+				c.fatal(errors.New(val))
+			case "error":
+				// TODO: Send to error handler
+				log.Print("Subprocess error: ", val)
+			case "objects":
+				c.objs = strings.Split(val, ", ")
+			case "ready":
+				if !c.ready(val) {
+					continue
+				}
+				// Start accepting calls
+				c.open()
 			}
 		case wr := <-p.killCh:
-			if ctrl.waitCh == nil {
+			if c.waitCh == nil {
 				wr.done()
 				continue
 			}
 
 			// If we don't accept calls, kill immediately
-			if ctrl.connCh == nil || ctrl.client == nil {
-				ctrl.kill()
+			if c.connCh == nil || c.client == nil {
+				c.kill()
 			} else {
 				// TODO: Improve this, should be in same routine
 				go func(t time.Duration) {
 					<-time.After(t)
-					ctrl.kill()
+					c.kill()
 				}(p.exitTimeout)
 
-				ctrl.client.Call(internalObject+".Exit", 0, nil)
+				c.client.Call(internalObject+".Exit", 0, nil)
 			}
 
 			// Do not accept calls
-			ctrl.close()
+			c.close()
 
 			// When wait on the subprocess is exited, signal back via "over"
-			ctrl.over = wr
-		case err := <-ctrl.waitCh:
+			c.over = wr
+		case err := <-c.waitCh:
 			if err != nil {
 				if _, ok := err.(*exec.ExitError); !ok {
 					log.Print("Generic error: ", err)
 				} else {
-					ctrl.fatal(err)
+					c.fatal(err)
 				}
 			}
 
 			// Signal to whoever killed us (via killCh) that we are done
-			if ctrl.over != nil {
-				ctrl.over.done()
+			if c.over != nil {
+				c.over.done()
 			}
 
-			ctrl.cmd = nil
-			ctrl.waitCh = nil
+			c.cmd = nil
+			c.waitCh = nil
+			c.linesCh = nil
 		case <-p.exitCh:
 			return
 		}

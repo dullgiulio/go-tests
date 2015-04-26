@@ -2,6 +2,7 @@ package sima
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 )
 
@@ -27,4 +28,17 @@ func (h header) parse(line string) (key, val string) {
 	}
 
 	return line[0:end], line[end+2:]
+}
+
+var _letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+func randstr(n int) string {
+	b := make([]rune, n)
+	l := len(_letters)
+
+	for i := range b {
+		b[i] = _letters[rand.Intn(l)]
+	}
+
+	return string(b)
 }
