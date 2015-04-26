@@ -1,7 +1,7 @@
 PKG=github.com/dullgiulio/sima
 BINDIR=bin
 BINS=simactl
-EXAMPLES=sima-hello-world
+EXAMPLES=sima-hello-world sima-sleep
 PKGDEPS=
 
 all: clean vet fmt build

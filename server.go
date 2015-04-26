@@ -8,7 +8,6 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"sync"
 )
 
 type SimaNilT struct{}
@@ -96,7 +95,7 @@ func (r *rpcServer) run() error {
 
 	if err != nil {
 		h.output("fatal",
-			fmt.Sprintf("err-connection-failed: Could not connect in %d attemps, using %s protocol", conn.retries(), r.conf.proto))
+			NewErrConnectionFailed(fmt.Sprintf("Could not connect in %d attemps, using %s protocol", conn.retries(), r.conf.proto)).Error())
 		return err
 	}
 
@@ -109,12 +108,12 @@ func (r *rpcServer) run() error {
 }
 
 func Register(obj interface{}) {
-    // TODO: panic() if run() has been called
-    defaultServer.register(obj)
+	// TODO: panic() if run() has been called
+	defaultServer.register(obj)
 }
 
 func Run() error {
-    return defaultServer.run()
+	return defaultServer.run()
 }
 
 type SimaRpc struct{}

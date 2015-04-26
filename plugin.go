@@ -3,122 +3,220 @@ package sima
 import (
 	"bufio"
 	"errors"
+	"io"
 	"log"
 	"net/rpc"
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
+	"time"
 )
 
-type plugin struct {
-	exe        string
-	proto      string
-	addr       string
-	objs       []string
-	cmd        *exec.Cmd
-	client     *rpc.Client
-	finishedCh chan error
-	inputCh    chan string
-	callsCh    chan *call
-	killCh     chan *waitRequest
-	over       *waitRequest
-	reg        *registration
-	ready      sync.RWMutex
-	calls      sync.WaitGroup
-	header     header
+const internalObject = "SimaRpc"
+
+type conn struct {
+	client *rpc.Client
+	err    error
+	wr     *waiter
 }
 
-func NewPlugin(exe string) *plugin {
-	p := &plugin{
-		exe:        exe,
-		objs:       make([]string, 0),
-		proto:      "unix",
-		inputCh:    make(chan string),
-		finishedCh: make(chan error),
-		callsCh:    make(chan *call),
-		killCh:     make(chan *waitRequest),
-		over:       newWaitRequest(),
-		header:     header("sima" + randstr(5)),
+type waiter struct {
+	c chan struct{}
+}
+
+func newWaiter() *waiter {
+	return &waiter{c: make(chan struct{})}
+}
+
+func (wr *waiter) wait() {
+	<-wr.c
+}
+
+func (wr *waiter) done() {
+	close(wr.c)
+}
+
+func (wr *waiter) reset() {
+	wr.c = make(chan struct{})
+}
+
+type objects struct {
+	list []string
+	err  error
+	wr   *waiter
+}
+
+type Plugin struct {
+	exe         string
+	proto       string
+	params      []string
+	objs        []string
+	initTimeout time.Duration
+	exitTimeout time.Duration
+	header      header
+	objsCh      chan *objects
+	connCh      chan *conn
+	killCh      chan *waiter
+	exitCh      chan struct{}
+}
+
+func NewPlugin(exe string, params ...string) (*Plugin, error) {
+	p := &Plugin{
+		exe:    exe,
+		proto:  "unix",
+		params: params,
+		// TODO: Make user configurable
+		initTimeout: 2 * time.Second,
+		exitTimeout: 1 * time.Second,
+		header:      header("sima" + randstr(5)),
+		objs:        make([]string, 0),
+		objsCh:      make(chan *objects),
+		connCh:      make(chan *conn),
+		killCh:      make(chan *waiter),
+		exitCh:      make(chan struct{}),
 	}
-	// Keep this locked exclusively until the plugin is ready.
-	p.ready.Lock()
-	go p.run()
-	return p
+	return p, nil
 }
 
-func (p *plugin) String() string {
+func (p *Plugin) String() string {
 	return p.exe + " " + strings.Join(p.objs, ", ")
 }
 
-func (p *plugin) start(reg *registration) {
-	p.reg = reg
-	go p.wait(exec.Command(p.exe, "-sima:prefix="+string(p.header), "-sima:proto="+p.proto))
-}
-
-func (p *plugin) call(c *call) {
-	p.callsCh <- c
-}
-
-func (p *plugin) doCall(c *call) {
-	// Stop and wait until ready.  This prevents calls to be
-	// fired before the plugin has actually started.
-	// If the start has failed, an error is returned.
-	p.ready.RLock()
-	defer p.ready.RUnlock()
-
-	p.calls.Add(1)
-
-	err := p.client.Call(c.obj+"."+c.function, c.args, c.resp)
-
-	// TODO: This is a potential data race?
-	if c.respCh != nil {
-		c.respCh <- err
-		close(c.respCh)
+func (p *Plugin) Start() {
+	params := make([]string, len(p.params)+2)
+	params[0] = "-sima:prefix=" + string(p.header)
+	params[1] = "-sima:proto=" + p.proto
+	for i := 0; i < len(p.params); i++ {
+		params[i+2] = p.params[i]
 	}
-
-	p.calls.Done()
-
-	return
+	cmd := exec.Command(p.exe, params...)
+	go p.run(cmd)
 }
 
-func (p *plugin) stop() {
-	// TODO: If "graceful", wait on p.calls
-	wr := newWaitRequest()
+func (p *Plugin) Stop() {
+	wr := newWaiter()
 	p.killCh <- wr
 	wr.wait()
-	p.over.wait()
+	p.exitCh <- struct{}{}
 }
 
-func (p *plugin) wait(cmd *exec.Cmd) {
+func (p *Plugin) Call(name string, args interface{}, resp interface{}) error {
+	conn := &conn{wr: newWaiter()}
+	p.connCh <- conn
+	conn.wr.wait()
+
+	if conn.err != nil {
+		return conn.err
+	}
+
+	return conn.client.Call(name, args, resp)
+}
+
+func (p *Plugin) Objects() ([]string, error) {
+	objects := &objects{wr: newWaiter()}
+	p.objsCh <- objects
+	objects.wr.wait()
+
+	return objects.list, objects.err
+}
+
+type pluginCtrl struct {
+	p *Plugin
+	// Protocol and address for RPC
+	proto, addr string
+	// Unrecoverable error is used as response to calls after it happened.
+	err error
+	// This channel is an alias to p.connCh. It allows to
+	// intermittedly process calls (only when we can handle them).
+	connCh chan *conn
+	// Same as above, but for objects requests
+	objsCh chan *objects
+	// Timeout on plugin startup time
+	timeoutCh <-chan time.Time
+	// Get notification from Wait on the subprocess
+	waitCh chan error
+	// Get output lines from subprocess
+	linesCh chan string
+	// Respond to a routine waiting for this mail loop to exit.
+	over *waiter
+	// Executable
+	cmd *exec.Cmd
+	// RPC client to subprocess
+	client *rpc.Client
+}
+
+func newPluginCtrl(p *Plugin, cmd *exec.Cmd, t time.Duration) *pluginCtrl {
+	return &pluginCtrl{
+		p:         p,
+		cmd:       cmd,
+		timeoutCh: time.After(t),
+		linesCh:   make(chan string),
+		waitCh:    make(chan error),
+	}
+}
+
+func (c *pluginCtrl) fatal(err error) {
+	c.err = err
+	c.open()
+	c.kill()
+}
+
+func (c *pluginCtrl) isFatal() bool {
+	return c.err != nil
+}
+
+func (c *pluginCtrl) close() {
+	c.connCh = nil
+	c.objsCh = nil
+}
+
+func (c *pluginCtrl) open() {
+	c.connCh = c.p.connCh
+	c.objsCh = c.p.objsCh
+}
+
+func (c *pluginCtrl) readOutput(r io.Reader) {
+	defer close(c.linesCh)
+
+	scanner := bufio.NewScanner(r)
+
+	for scanner.Scan() {
+		c.linesCh <- scanner.Text()
+	}
+}
+
+func (c *pluginCtrl) wait(cmd *exec.Cmd) {
+	if cmd == nil {
+		// TODO: Shouldn't happen, but reply with error
+		return
+	}
+	defer close(c.waitCh)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		p.finishedCh <- err
+		c.waitCh <- err
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		p.finishedCh <- err
+		c.waitCh <- err
 		return
 	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		p.inputCh <- scanner.Text()
-	}
 
-	err = cmd.Wait()
-	p.finishedCh <- err
+	c.readOutput(stdout)
+
+	c.waitCh <- cmd.Wait()
 }
 
-func (p *plugin) doKill() {
-	if p.cmd == nil {
+func (c *pluginCtrl) kill() {
+	if c.cmd == nil {
 		return
 	}
-	if err := p.cmd.Process.Kill(); err != nil {
+	if err := c.cmd.Process.Kill(); err != nil {
 		log.Print("Cannot kill: ", err)
 	}
+	c.cmd = nil
 }
 
-func (p *plugin) parseReady(str string) error {
+func (c *pluginCtrl) parseReady(str string) error {
 	errInvalid := errors.New("invalid ready message")
 	if !strings.HasPrefix(str, "proto=") {
 		return errInvalid
@@ -128,116 +226,130 @@ func (p *plugin) parseReady(str string) error {
 	if s < 0 {
 		return errInvalid
 	}
-	p.proto = str[0:s]
+	c.proto = str[0:s]
 	str = str[s+1:]
 	if !strings.HasPrefix(str, "addr=") {
 		return errInvalid
 	}
-	p.addr = str[5:]
+	c.addr = str[5:]
 	return nil
 }
 
-func (p *plugin) run() {
-	var errPluginUnrecoverable error
-
-	// This channel is an alias to p.callsCh. It allows to
-	// intermittedly process calls (only when we can handle them).
-	var callsCh chan *call
+func (p *Plugin) run(cmd *exec.Cmd) {
+	ctrl := newPluginCtrl(p, cmd, p.initTimeout)
+	go ctrl.wait(cmd)
 
 	for {
 		select {
-		case c := <-callsCh:
-			if errPluginUnrecoverable != nil {
-				c.respCh <- errPluginUnrecoverable
+		case <-ctrl.timeoutCh:
+			ctrl.fatal(errors.New("Registration timed out"))
+		case c := <-ctrl.connCh:
+			if ctrl.isFatal() {
+				c.err = ctrl.err
+				c.wr.done()
+				continue
 			}
 
-			// If the plugin is not ready, the call will just hang waiting.
-			go p.doCall(c)
-		case line := <-p.inputCh:
+			c.client = ctrl.client
+			c.wr.done()
+		case o := <-ctrl.objsCh:
+			if ctrl.isFatal() {
+				o.err = ctrl.err
+				o.wr.done()
+				continue
+			}
+
+			// Copy the list of objects for the requestor
+			o.list = make([]string, len(p.objs)-1)
+			for i, j := 0, 0; i < len(p.objs); i++ {
+				if p.objs[i] == internalObject {
+					continue
+				}
+				o.list[j] = p.objs[i]
+				j = j + 1
+			}
+			o.wr.done()
+		case line := <-ctrl.linesCh:
 			if key, val := p.header.parse(line); key != "" {
 				switch key {
 				case "fatal":
-					log.Print("Fatal: ", val)
-					p.doKill()
+					ctrl.fatal(errors.New(val))
 				case "error":
+					// TODO: Send to error handler
 					log.Print("Subprocess error: ", val)
 				case "objects":
 					p.objs = strings.Split(val, ", ")
-					// Send the objects that we have in this plugin
-					p.reg.objs = p.objs
-					p.reg.done()
-					p.reg = nil // XXX: Cannot reuse?
+					// We will start replyin to "Objects" requests only when
+					// the subprocess is ready
 				case "ready":
 					var err error
 
-					if p.parseReady(val); err != nil {
-						log.Print("Cannot parse plugin connection data: ", err)
-						p.doKill()
-						// TODO: Unrecoverable?
+					if err := ctrl.parseReady(val); err != nil {
+						ctrl.fatal(err)
 						continue
 					}
 
-					p.client, err = rpc.DialHTTP(p.proto, p.addr)
+					ctrl.client, err = rpc.DialHTTP(ctrl.proto, ctrl.addr)
 					if err != nil {
-						// If we get an error after the plugin declared itself as ready,
-						// the plugin is lying or there has been another problem.  In any case
-						// this plugin needs to be killed and started again.
-						log.Print("dial failed: ", err)
-
-						p.doKill()
-
-						// TODO: restart this plugin
+						ctrl.fatal(err)
 						continue
 					}
 
 					// Remove the temp socket now that we are connected
-					if p.proto == "unix" {
-						if err := os.Remove(p.addr); err != nil {
+					if ctrl.proto == "unix" {
+						if err := os.Remove(ctrl.addr); err != nil {
 							log.Print("Cannot remove temporary socket: ", err)
 						}
 					}
 
-					// Start accepting calls in this loop
-					callsCh = p.callsCh
+					// Defuse the timeout on ready
+					ctrl.timeoutCh = nil
 
-					// Broadcast that we are ready to process call requests.
-					p.ready.Unlock()
+					// Start accepting calls
+					ctrl.open()
 				}
 			}
 		case wr := <-p.killCh:
-			// If we don't accept calls, kill immediately
-			if callsCh == nil {
-				p.doKill()
-			} else {
-				/*
-					go func() {
-						<-time.After(1 * time.Second)
-						log.Print("Killing now")
-						p.doKill()
-					}()
-				*/
-
-				go p.doCall(&call{obj: "SimaRpc", function: "Exit", args: 0})
+			if ctrl.waitCh == nil {
+				wr.done()
+				continue
 			}
+
+			// If we don't accept calls, kill immediately
+			if ctrl.connCh == nil || ctrl.client == nil {
+				ctrl.kill()
+			} else {
+				// TODO: Improve this, should be in same routine
+				go func(t time.Duration) {
+					<-time.After(t)
+					ctrl.kill()
+				}(p.exitTimeout)
+
+				ctrl.client.Call(internalObject+".Exit", 0, nil)
+			}
+
 			// Do not accept calls
-			callsCh = nil
-			// TODO: Set that we were killed
-			wr.done()
-		case err := <-p.finishedCh:
+			ctrl.close()
+
+			// When wait on the subprocess is exited, signal back via "over"
+			ctrl.over = wr
+		case err := <-ctrl.waitCh:
 			if err != nil {
 				if _, ok := err.(*exec.ExitError); !ok {
 					log.Print("Generic error: ", err)
+				} else {
+					ctrl.fatal(err)
 				}
 			}
 
-			// If we get calls now, they must hang
-			p.ready.Lock()
-			// And must not be served but this loop
-			callsCh = nil
+			// Signal to whoever killed us (via killCh) that we are done
+			if ctrl.over != nil {
+				ctrl.over.done()
+			}
 
-			p.over.done()
-
-			// TODO: If we were not killed restart plugin
+			ctrl.cmd = nil
+			ctrl.waitCh = nil
+		case <-p.exitCh:
 			return
 		}
 	}

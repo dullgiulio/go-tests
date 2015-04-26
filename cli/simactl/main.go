@@ -6,20 +6,32 @@ import (
 	"log"
 )
 
-func main() {
-	m := sima.NewManager()
+func runPlugin(s string) {
+	p, err := sima.NewPlugin(s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	p.Start()
+	defer p.Stop()
 
-	// TODO: Request an object from a plugin.
-	p := sima.NewPlugin("bin/examples/sima-hello-world")
-	m.Register(p)
+	objs, err := p.Objects()
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	fmt.Printf("Objects: %s\n", objs)
 
 	var resp string
 
-	if err := m.Call("Plugin.SayHello", "Giulio", &resp); err != nil {
+	if err := p.Call("Plugin.SayHello", "Giulio", &resp); err != nil {
 		log.Print(err)
 	} else {
 		fmt.Printf("%s\n", resp)
 	}
+}
 
-	m.Stop()
+func main() {
+	runPlugin("bin/examples/sima-hello-world")
+	runPlugin("bin/examples/sima-sleep")
 }

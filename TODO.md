@@ -1,5 +1,4 @@
 # TODO
 
-* Start and stop plugin binaries
-* Ways to start and stop remote binaries
-* Middleware to route rpc requests to different plugin instances (load balancing, etc)
+* Ways to start and stop remote binaries (upload and start via SSH)
+* For unix plugins, can create temporary pipes (define API)
