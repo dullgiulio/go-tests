@@ -37,7 +37,7 @@ func NewPlugin(exe string, params ...string) (*Plugin, error) {
 		params: params,
 		// TODO: Make user configurable
 		initTimeout: 2 * time.Second,
-		exitTimeout: 1 * time.Second,
+		exitTimeout: 2 * time.Second,
 		header:      header("sima" + randstr(5)),
 		objsCh:      make(chan *objects),
 		connCh:      make(chan *conn),
@@ -52,14 +52,7 @@ func (p *Plugin) String() string {
 }
 
 func (p *Plugin) Start() {
-	params := make([]string, len(p.params)+2)
-	params[0] = "-sima:prefix=" + string(p.header)
-	params[1] = "-sima:proto=" + p.proto
-	for i := 0; i < len(p.params); i++ {
-		params[i+2] = p.params[i]
-	}
-	cmd := exec.Command(p.exe, params...)
-	go p.run(cmd)
+	go p.run()
 }
 
 func (p *Plugin) Stop() {
@@ -144,15 +137,14 @@ type ctrl struct {
 	// Respond to a routine waiting for this mail loop to exit.
 	over *waiter
 	// Executable
-	cmd *exec.Cmd
+	proc *os.Process
 	// RPC client to subprocess
 	client *rpc.Client
 }
 
-func newCtrl(p *Plugin, cmd *exec.Cmd, t time.Duration) *ctrl {
+func newCtrl(p *Plugin, t time.Duration) *ctrl {
 	return &ctrl{
 		p:         p,
-		cmd:       cmd,
 		timeoutCh: time.After(t),
 		linesCh:   make(chan string),
 		waitCh:    make(chan error),
@@ -214,8 +206,11 @@ func (c *ctrl) readOutput(r io.Reader) {
 	}
 }
 
-func (c *ctrl) wait(cmd *exec.Cmd) {
+func (c *ctrl) wait(pidCh chan<- int, exe string, params ...string) {
 	defer close(c.waitCh)
+	defer close(pidCh)
+
+	cmd := exec.Command(exe, params...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -226,6 +221,7 @@ func (c *ctrl) wait(cmd *exec.Cmd) {
 		c.waitCh <- err
 		return
 	}
+	pidCh <- cmd.Process.Pid
 
 	c.readOutput(stdout)
 
@@ -233,14 +229,13 @@ func (c *ctrl) wait(cmd *exec.Cmd) {
 }
 
 func (c *ctrl) kill() {
-	if c.cmd == nil {
+	if c.proc == nil {
 		return
 	}
-	if err := c.cmd.Process.Kill(); err != nil {
-		// TODO: Send to error handler
-		log.Print("Cannot kill: ", err)
-	}
-	c.cmd = nil
+	// Ignore errors here because Kill might have been called after
+	// process has ended.
+	c.proc.Kill()
+	c.proc = nil
 }
 
 func (c *ctrl) parseReady(str string) error {
@@ -274,9 +269,24 @@ func (c *ctrl) objects() []string {
 	return list
 }
 
-func (p *Plugin) run(cmd *exec.Cmd) {
-	c := newCtrl(p, cmd, p.initTimeout)
-	go c.wait(cmd)
+func (p *Plugin) run() {
+	params := make([]string, len(p.params)+2)
+	params[0] = "-sima:prefix=" + string(p.header)
+	params[1] = "-sima:proto=" + p.proto
+	for i := 0; i < len(p.params); i++ {
+		params[i+2] = p.params[i]
+	}
+	c := newCtrl(p, p.initTimeout)
+
+	pidCh := make(chan int)
+	go c.wait(pidCh, p.exe, params...)
+	pid := <-pidCh
+
+	if pid != 0 {
+		if proc, err := os.FindProcess(pid); err == nil {
+			c.proc = proc
+		}
+	}
 
 	for {
 		select {
@@ -335,11 +345,14 @@ func (p *Plugin) run(cmd *exec.Cmd) {
 			if c.connCh == nil || c.client == nil {
 				c.kill()
 			} else {
-				// TODO: Improve this, should be in same routine
-				go func(t time.Duration) {
+				// Be sure to kill the process if it doesn't obey Exit.
+				go func(pid int, t time.Duration) {
 					<-time.After(t)
-					c.kill()
-				}(p.exitTimeout)
+
+					if proc, err := os.FindProcess(pid); err == nil {
+						proc.Kill()
+					}
+				}(pid, p.exitTimeout)
 
 				c.client.Call(internalObject+".Exit", 0, nil)
 			}
@@ -363,7 +376,7 @@ func (p *Plugin) run(cmd *exec.Cmd) {
 				c.over.done()
 			}
 
-			c.cmd = nil
+			c.proc = nil
 			c.waitCh = nil
 			c.linesCh = nil
 		case <-p.exitCh:
