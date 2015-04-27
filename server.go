@@ -110,8 +110,7 @@ func (r *rpcServer) run() error {
 	}
 
 	if err != nil {
-		h.output("fatal",
-			NewErrConnectionFailed(fmt.Sprintf("Could not connect in %d attemps, using %s protocol", conn.retries(), r.conf.proto)).Error())
+		h.output("fatal", fmt.Sprintf("%s: Could not connect in %d attemps, using %s protocol", errorCodeConnFailed, conn.retries(), r.conf.proto))
 		return err
 	}
 

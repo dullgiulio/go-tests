@@ -7,7 +7,7 @@ import (
 )
 
 func runPlugin(s string) {
-	p, err := sima.NewPlugin(s)
+	p, err := sima.NewPlugin("unix", s)
 	if err != nil {
 		log.Fatal(err)
 	}

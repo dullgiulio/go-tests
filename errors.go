@@ -1,29 +1,42 @@
 package sima
 
-import "fmt"
-
-type errorCode string
-
-const (
-	errorCodeConnFailed errorCode = "err-connection-failed"
+import (
+	"errors"
+	"strings"
 )
 
-type codedError struct {
-	name errorCode
-	err  string
-}
+const (
+	errorCodeConnFailed = "err-connection-failed"
+	errorCodeHttpServe  = "err-http-serve"
+)
 
-func (p *codedError) Error() string {
-	return fmt.Sprintf("%s: %s", string(p.name), p.err)
-}
+// Error reported when connection to the external plugin has failed.
+type ErrConnectionFailed error
 
-type ErrConnectionFailed codedError
+// Error reported when the external plugin cannot start listening for calls.
+type ErrHttpServe error
 
-func NewErrConnectionFailed(e string) error {
-	err := &ErrConnectionFailed{errorCodeConnFailed, e}
-	return error(err)
-}
+// Error reported when an invalid message is printed by the external plugin.
+type ErrInvalidMessage error
 
-func (e *ErrConnectionFailed) Error() string {
-	return (*codedError)(e).Error()
+// Error reported when the plugin fails to register before the registration
+// timeout expires.
+type ErrRegistrationTimeout error
+
+func parseError(line string) error {
+	parts := strings.SplitN(line, ": ", 2)
+	if parts[0] == "" {
+		return nil
+	}
+
+	err := errors.New(parts[1])
+
+	switch parts[0] {
+	case errorCodeConnFailed:
+		return ErrConnectionFailed(err)
+	case errorCodeHttpServe:
+		return ErrHttpServe(err)
+	}
+
+	return err
 }
