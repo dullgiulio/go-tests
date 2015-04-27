@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"github.com/dullgiulio/sima"
-	//"os"
-	//"time"
 )
 
 type Plugin struct{}
@@ -17,13 +15,6 @@ func (p *Plugin) SayHello(name string, msg *string) error {
 
 func main() {
 	plugin := &Plugin{}
-
-	/*
-		go func() {
-			<-time.After(3 * time.Second)
-			os.Exit(0)
-		}()
-	*/
 
 	sima.Register(plugin)
 	sima.Run()

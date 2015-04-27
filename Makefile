@@ -15,7 +15,7 @@ vet:
 	go vet $(PKG)/...
 
 libsima:
-	go build $(PKG)
+	go build $(RACE) $(PKG)
 
 clean:
 	rm -rf $(BINDIR)/examples/*
@@ -28,10 +28,10 @@ bindirex:
 	mkdir -p $(BINDIR)/examples
 
 $(BINS): bindir
-	go build -o $(BINDIR)/$@ $(PKG)/cli/$@
+	go build $(RACE) -o $(BINDIR)/$@ $(PKG)/cli/$@
 
 $(EXAMPLES): bindirex
-	go build -o $(BINDIR)/examples/$@ $(PKG)/examples/$@
+	go build $(RACE) -o $(BINDIR)/examples/$@ $(PKG)/examples/$@
 
 $(PKGDEPS):
 	go get -u $@

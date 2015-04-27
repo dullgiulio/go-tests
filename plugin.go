@@ -1,3 +1,6 @@
+// Package pingo implements the basics for creating and running subprocesses
+// as plugins.  The subprocesses will communicate via either TCP or Unix socket
+// to implement an interface that mimics the standard RPC package.
 package sima
 
 import (
@@ -18,15 +21,21 @@ var (
 	errRegistrationTimeout = ErrRegistrationTimeout(errors.New("Registration timed out"))
 )
 
-// Represents a plugin. After being created the plugin is not started or ready to run. Use Start() to make the plugin available.
+// Represents a plugin. After being created the plugin is not started or ready to run.
+//
+// Additional configuration (ErrorHandler and Timeout) can be set after initialization.
+//
+// Use Start() to make the plugin available.
 type Plugin struct {
 	exe         string
 	proto       string
+	unixdir     string
 	params      []string
 	initTimeout time.Duration
 	exitTimeout time.Duration
 	handler     ErrorHandler
-	header      header
+	running     bool
+	meta        meta
 	objsCh      chan *objects
 	connCh      chan *conn
 	killCh      chan *waiter
@@ -34,28 +43,70 @@ type Plugin struct {
 }
 
 // NewPlugin create a new plugin ready to be started, or returns an error if the initial setup fails.
-// The only supported protocol at the moment is "unix" (the plugin will run locally).
+//
+// The first argument specifies the protocol. It can be either set to "unix" for communication on an
+// ephemeral local socket, or "tcp" for network communication on the local host (using a random
+// unprivileged port.)
+//
+// This constructor will panic if the proto argument is neither "unix" nor "tcp".
 //
 // The path to the plugin executable should be absolute. Any path accepted by the "exec" package in the
 // standard library is accepted and the same rules for execution are applied.
 //
 // Optionally some parameters might be passed to the plugin executable.
-func NewPlugin(proto, path string, params ...string) (*Plugin, error) {
+func NewPlugin(proto, path string, params ...string) *Plugin {
+	if proto != "unix" && proto != "tcp" {
+		panic("Invalid protocol. Specify 'unix' or 'tcp'.")
+	}
 	p := &Plugin{
-		exe:    path,
-		proto:  "unix", // XXX: Only unix supported for now
-		params: params,
-		// TODO: Make user configurable
+		exe:         path,
+		proto:       proto,
+		params:      params,
 		initTimeout: 2 * time.Second,
 		exitTimeout: 2 * time.Second,
 		handler:     NewDefaultErrorHandler(),
-		header:      header("sima" + randstr(5)),
+		meta:        meta("sima" + randstr(5)),
 		objsCh:      make(chan *objects),
 		connCh:      make(chan *conn),
 		killCh:      make(chan *waiter),
 		exitCh:      make(chan struct{}),
 	}
-	return p, nil
+	return p
+}
+
+// Set the error (and output) handler implementation.  Use this to set a custom implementation.
+// By default, standard logging is used.  See ErrorHandler.
+//
+// Panics if called after Start.
+func (p *Plugin) SetErrorHandler(h ErrorHandler) {
+	if p.running {
+		panic("Cannot call SetErrorHandler after Start")
+	}
+	p.handler = h
+}
+
+// Set the maximum time a plugin is allowed to start up and to shut down.  Empty timeout (zero)
+// is not allowed, default will be used.
+//
+// Default is two seconds.
+//
+// Panics if called after Start.
+func (p *Plugin) SetTimeout(t time.Duration) {
+	if p.running {
+		panic("Cannot call SetTimeout after Start")
+	}
+	if t == 0 {
+		return
+	}
+	p.initTimeout = t
+	p.exitTimeout = t
+}
+
+func (p *Plugin) SetSocketDirectory(dir string) {
+	if p.running {
+		panic("Cannot call SetSocketDirectory after Start")
+	}
+	p.unixdir = dir
 }
 
 // Default string representation
@@ -68,6 +119,7 @@ func (p *Plugin) String() string {
 //
 // Calls subsequent to Start will hang until the plugin has been properly initialized.
 func (p *Plugin) Start() {
+	p.running = true
 	go p.run()
 }
 
@@ -331,10 +383,14 @@ func (c *ctrl) objects() []string {
 
 func (p *Plugin) run() {
 	params := make([]string, len(p.params)+2)
-	params[0] = "-sima:prefix=" + string(p.header)
+	params[0] = "-sima:prefix=" + string(p.meta)
 	params[1] = "-sima:proto=" + p.proto
+	if p.proto == "unix" && p.unixdir != "" {
+		params = append(params, "-sima:unixdir="+p.unixdir)
+	}
+	offset := len(params)
 	for i := 0; i < len(p.params); i++ {
-		params[i+2] = p.params[i]
+		params[i+offset] = p.params[i]
 	}
 	c := newCtrl(p, p.initTimeout)
 
@@ -371,7 +427,7 @@ func (p *Plugin) run() {
 			o.list = c.objects()
 			o.wr.done()
 		case line := <-c.linesCh:
-			key, val := p.header.parse(line)
+			key, val := p.meta.parse(line)
 			if key == "" {
 				if val != "" {
 					p.handler.Print(val)

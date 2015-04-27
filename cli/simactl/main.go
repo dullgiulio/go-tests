@@ -6,11 +6,8 @@ import (
 	"log"
 )
 
-func runPlugin(s string) {
-	p, err := sima.NewPlugin("unix", s)
-	if err != nil {
-		log.Fatal(err)
-	}
+func runPlugin(proto, path string) {
+	p := sima.NewPlugin(proto, path)
 	p.Start()
 	defer p.Stop()
 
@@ -32,6 +29,13 @@ func runPlugin(s string) {
 }
 
 func main() {
-	runPlugin("bin/examples/sima-hello-world")
-	runPlugin("bin/examples/sima-sleep")
+	protocols := []string{"unix", "tcp"}
+	for _, p := range protocols {
+		fmt.Println("Running hello world plugin")
+		runPlugin(p, "bin/examples/sima-hello-world")
+		fmt.Println("Plugin terminated.")
+		fmt.Println("Running plugin that fails to register in time")
+		runPlugin(p, "bin/examples/sima-sleep")
+		fmt.Println("Plugin terminated.")
+	}
 }

@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-type header string
+type meta string
 
-func (h header) output(key, val string) {
+func (h meta) output(key, val string) {
 	fmt.Printf("%s: %s: %s\n", string(h), key, val)
 }
 
-func (h header) parse(line string) (key, val string) {
+func (h meta) parse(line string) (key, val string) {
 	if line == "" {
 		return
 	}
