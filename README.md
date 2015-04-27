@@ -87,4 +87,4 @@ Report bugs in Github.  Pull requests are welcome!
 
 ## License
 
-BSD
+MIT

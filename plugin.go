@@ -359,12 +359,18 @@ func (c *ctrl) parseReady(str string) error {
 	if s < 0 {
 		return errInvalidMessage
 	}
-	c.proto = str[0:s]
+	proto := str[0:s]
+	if proto != "unix" && proto != "tcp" {
+		return errInvalidMessage
+	}
+	c.proto = proto
+
 	str = str[s+1:]
 	if !strings.HasPrefix(str, "addr=") {
 		return errInvalidMessage
 	}
 	c.addr = str[5:]
+
 	return nil
 }
 
@@ -428,13 +434,6 @@ func (p *Plugin) run() {
 			o.wr.done()
 		case line := <-c.linesCh:
 			key, val := p.meta.parse(line)
-			if key == "" {
-				if val != "" {
-					p.handler.Print(val)
-				}
-				continue
-			}
-
 			switch key {
 			case "fatal":
 				if err := parseError(val); err != nil {
@@ -456,6 +455,8 @@ func (p *Plugin) run() {
 				}
 				// Start accepting calls
 				c.open()
+			default:
+				p.handler.Print(line)
 			}
 		case wr := <-p.killCh:
 			if c.waitCh == nil {

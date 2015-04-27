@@ -32,10 +32,15 @@ func main() {
 	protocols := []string{"unix", "tcp"}
 	for _, p := range protocols {
 		fmt.Println("Running hello world plugin")
-		runPlugin(p, "bin/examples/sima-hello-world")
-		fmt.Println("Plugin terminated.")
-		fmt.Println("Running plugin that fails to register in time")
-		runPlugin(p, "bin/examples/sima-sleep")
+
+		runPlugin(p, "bin/examples/pingo-hello-world")
+
 		fmt.Println("Plugin terminated.")
 	}
+
+	fmt.Println("Running plugin that fails to register in time")
+
+	runPlugin("tcp", "bin/examples/pingo-sleep")
+
+	fmt.Println("Plugin terminated.")
 }

@@ -1,7 +1,7 @@
 PKG=github.com/dullgiulio/sima
 BINDIR=bin
-BINS=simactl
-EXAMPLES=sima-hello-world sima-sleep
+BINS=pingo
+PLUGINS=pingo-hello-world pingo-sleep
 PKGDEPS=
 
 all: clean vet fmt build
@@ -18,19 +18,19 @@ libsima:
 	go build $(RACE) $(PKG)
 
 clean:
-	rm -rf $(BINDIR)/examples/*
+	rm -rf $(BINDIR)/plugins/*
 	rm -rf $(BINDIR)/*
 
 bindir:
 	mkdir -p $(BINDIR)
 
 bindirex:
-	mkdir -p $(BINDIR)/examples
+	mkdir -p $(BINDIR)/plugins
 
 $(BINS): bindir
-	go build $(RACE) -o $(BINDIR)/$@ $(PKG)/cli/$@
+	go build $(RACE) -o $(BINDIR)/$@ $(PKG)/examples/$@
 
-$(EXAMPLES): bindirex
+$(PLUGINS): bindirex
 	go build $(RACE) -o $(BINDIR)/examples/$@ $(PKG)/examples/$@
 
 $(PKGDEPS):
