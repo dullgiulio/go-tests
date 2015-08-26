@@ -1,7 +1,6 @@
 package main
 
 import (
-	"compress/gzip"
 	"flag"
 	"io"
 	"io/ioutil"
@@ -11,6 +10,8 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"time"
+
+	"github.com/klauspost/compress/gzip"
 )
 
 type deferredWriter struct {
