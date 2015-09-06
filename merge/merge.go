@@ -33,6 +33,35 @@ func MergeC(a, b []int) []int {
 	return c
 }
 
+func MergeD(left, right []int) []int {
+    sort.Ints(left)
+    sort.Ints(right)
+    into := make([]int, 0, len(left)+len(right))
+    if len(left) == 0 {
+        return append(into, right...)
+    }
+    if len(right) == 0 {
+        return append(into, left...)
+    }
+
+    rlast := 0
+    for _, lv := range left {
+        for _, rv := range right[rlast:] {
+            if lv == rv {
+                rlast += 1
+                continue
+            }
+            if lv < rv {
+                break
+            }
+            into = append(into, rv)
+            rlast += 1
+        }
+        into = append(into, lv)
+    }
+    return append(into, right[rlast:]...)
+}
+
 func MergeB(a, b []int) []int {
 	// Create a map that holds the values from each slice
 	unique := make(map[int]struct{}) // zero byte payload

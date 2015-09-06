@@ -60,6 +60,19 @@ func TestMergeC(t *testing.T) {
 	}
 }
 
+func TestMergeD(t *testing.T) {
+	for i, a := range mergeTests {
+		m := MergeD(a.a, a.b)
+		same := len(m) == len(a.m)
+		for i := 0; same && i < len(m); i++ {
+			same = m[i] == a.m[i]
+		}
+		if !same {
+			t.Errorf("#%d, MergeD(%v, %v) value is %v; want %v", i, a.a, a.b, m, a.m)
+		}
+	}
+}
+
 //
 // BENCHMARKS
 //
@@ -175,3 +188,18 @@ func BenchmarkMergeC400(b *testing.B)   { benchmarkMergeC(b, 400) }
 func BenchmarkMergeC500(b *testing.B)   { benchmarkMergeC(b, 500) }
 func BenchmarkMergeC1000(b *testing.B)  { benchmarkMergeC(b, 1000) }
 func BenchmarkMergeC10000(b *testing.B) { benchmarkMergeC(b, 10000) }
+
+func benchmarkMergeD(b *testing.B, n int) {
+	for i := 0; i < b.N; i++ {
+		_ = MergeD(iota[0:n], iota[1:n+1])
+	}
+}
+
+func BenchmarkMergeD10(b *testing.B)    { benchmarkMergeD(b, 10) }
+func BenchmarkMergeD100(b *testing.B)   { benchmarkMergeD(b, 100) }
+func BenchmarkMergeD200(b *testing.B)   { benchmarkMergeD(b, 200) }
+func BenchmarkMergeD300(b *testing.B)   { benchmarkMergeD(b, 300) }
+func BenchmarkMergeD400(b *testing.B)   { benchmarkMergeD(b, 400) }
+func BenchmarkMergeD500(b *testing.B)   { benchmarkMergeD(b, 500) }
+func BenchmarkMergeD1000(b *testing.B)  { benchmarkMergeD(b, 1000) }
+func BenchmarkMergeD10000(b *testing.B) { benchmarkMergeD(b, 10000) }
