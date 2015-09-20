@@ -11,16 +11,22 @@ func printEntries(e entry, tabs int) {
 	for i := 0; i < tabs; i++ {
 		fmt.Print("\t")
 	}
-	fmt.Printf("%s", e.String())
+	fmt.Printf("%s\n", e.String())
 	children := e.Children()
 	if children != nil {
 		for i := range children {
 			printEntries(children[i], tabs+1)
 		}
 	}
+	fmt.Print("\n")
 }
 
 type text string
+
+func newText(s string) *text {
+	t := text(s)
+	return &t
+}
 
 func (t *text) String() string {
 	return string(*t)
@@ -34,7 +40,7 @@ type list struct {
 	entries []entry
 }
 
-func (l *list) newList() *list {
+func newList() *list {
 	return &list{entries: make([]entry, 0)}
 }
 
