@@ -33,7 +33,6 @@ func NewClient(senders int) *Client {
 func (c *Client) deliverMsgs() {
 	for msg := range c.deliver {
 		// XXX: Real delivery operation that might take long
-		<-time.After(time.Second * 1)
 		fmt.Printf("%s: Message delivered\n", msg)
 		// XXX: Failure here sends on c.errs and just continues
 	}
@@ -76,6 +75,7 @@ func (c *Client) Close() {
 func main() {
 	c := NewClient(3)
 	for i := 0; i < 6; i++ {
+		<-time.After(time.Second * 2)
 		c.Send(fmt.Sprintf("Msg #%d", i))
 	}
 	c.Close()
